@@ -1,6 +1,5 @@
 import numpy as np
 import cv2
-import cvzone
 import math
 from sort import *
 from ultralytics import YOLO
@@ -38,11 +37,17 @@ def get_weight(clas):
 def extract_weights(detections):
     return detections[:, 5]
 
+# Callback function for mouse events
+def mouse_callback(event, x, y, flags, param):
+    if event == cv2.EVENT_LBUTTONDOWN:
+        print(f"Clicked at (x={x}, y={y})")
+
 # Load YOLO model
 model = YOLO("yolov8n.pt")
 
 # Load the video
-cap = cv2.VideoCapture("./Videos/traffic2.mp4")
+cap = cv2.VideoCapture("./Videos/traffic-stop-test.mp4")
+
 
 # Load the mask
 mask = cv2.imread("mask.png")
@@ -54,7 +59,18 @@ tracker = Sort(max_age=20, min_hits=3, iou_threshold=0.3)
 entry_times = {}
 
 # Dictionary to store waiting times for cars
-car_waiting_times = {}
+left_waiting_times = {}
+right_waiting_times = {}
+
+# Dictionary to store last position of each car
+last_positions = {}
+
+# Threshold for bounding box movement (you can adjust this)
+movement_threshold = 3
+
+# Create a window and set the mouse callback function
+cv2.namedWindow("output")
+cv2.setMouseCallback("output", mouse_callback)
 
 while True:
     success, img = cap.read()
@@ -71,7 +87,7 @@ while True:
         boxes = r.boxes
         for box in boxes:
             x1, y1, x2, y2 = box.xyxy[0]
-            x1, y1, x2, y2 = int(x1), int(y1), int(x2),int(y2)
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
             w, h = x2 - x1, y2 - y1
             conf = math.ceil((box.conf[0] * 100)) / 100
             cls = int(box.cls[0])
@@ -85,37 +101,45 @@ while True:
 
     for item in resultsTracker:
         x1, y1, x2, y2, track_id = item[:5].astype(int)
-        currentClass = CLASS_NAMES[cls]
-        if currentClass in ["car", "truck", "bus", "motorbike"]:
-            # Check if this is a new ID
-            if track_id not in entry_times:
+        if track_id not in entry_times:
+            entry_times[track_id] = time.time()
+
+        # Check if the car has moved less than the threshold
+        if track_id in last_positions:
+            last_x, last_y = last_positions[track_id]
+            movement = np.sqrt((x1 - last_x)**2 + (y1 - last_y)**2)
+
+            # If the movement is below the threshold, update the entry time
+            if movement < movement_threshold:
                 entry_times[track_id] = time.time()
 
-            # Get the time of entry
-            entry_time = entry_times[track_id]
+        # Get the time of entry
+        entry_time = entry_times[track_id]
 
-            # Calculate the elapsed time since entry
-            elapsed_time = time.time() - entry_time
+        # Calculate the elapsed time since entry
+        elapsed_time = time.time() - entry_time
 
-            # Display class name, tracking ID, and time of entry on the frame
-            cvzone.putTextRect(img, f'{currentClass} ID: {track_id}', (max(0, x1), max(35, y1)),
-                               scale=0, thickness=3, offset=3)
-            cvzone.putTextRect(img, f'Entry Time: {elapsed_time:.1f}s', (max(0, x1), max(80, y1)),
-                               scale=4, thickness=3, offset=2)
-            cvzone.cornerRect(img, (x1, y1, x2 - x1, y2 - y1), l=9, rt=5)
+        # Display class name, tracking ID, and time of entry on the frame
+        # cv2.putText(img, f'{currentClass} ID: {track_id}', (max(0, x1), max(35, y1)), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 0), 4)
+        cv2.putText(img, f'Waiting: {elapsed_time:.1f}s', (max(0, x1), max(180, y1)), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 150, 255), 5)
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
-            # Update the waiting time for cars
-            if currentClass == "car":
-                if track_id in car_waiting_times:
-                    car_waiting_times[track_id] = elapsed_time
-                else:
-                    car_waiting_times[track_id] = elapsed_time
+        if x2 < 1800:  # detection on the left side
+            left_waiting_times[track_id] = elapsed_time
+        elif x1 > 1800:  # detection on the right side
+            right_waiting_times[track_id] = elapsed_time
+
+        # Update last position
+        last_positions[track_id] = (x1, y1)
 
     # Calculate the cumulative waiting time for cars in the current detections
-    total_car_waiting_time = sum([car_waiting_times[id] for id in car_waiting_times if id in resultsTracker[:, 4].astype(int)])
+    total_right_waiting_time = sum([right_waiting_times[id] for id in right_waiting_times if id in resultsTracker[:, 4].astype(int)])
+    total_left_waiting_time = sum([left_waiting_times[id] for id in left_waiting_times if id in resultsTracker[:, 4].astype(int)])
 
     # Display the cumulative waiting time for cars in the current detections
-    cvzone.putTextRect(img, f'Waiting Time (Current Detections): {total_car_waiting_time:.1f}s', (50, 150), 6)
+    cv2.putText(img, f'Lane 1 Waiting Time: {total_left_waiting_time:.1f}s', (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 255, 0), 4)
+    cv2.putText(img, f'Lane 2 Waiting Time: {total_right_waiting_time:.1f}s', (2050, 150), cv2.FONT_HERSHEY_SIMPLEX, 3, (255, 0, 255), 4)
+    # cv2.line(img, (1900, 800), (1900, 2200), (0, 255, 0), 10)
 
     # Resize and display the image
     img_resized = cv2.resize(img, (960, 540))
